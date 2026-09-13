@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>施工写真 黒板OCR → Excel</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header>
+    <div>
+      <h1>施工写真 黒板OCR → Excel</h1>
+      <p>写真はブラウザ内で解析します。写真データをこのサイトへアップロードする処理はありません。</p>
+    </div>
+    <span id="engineBadge" class="badge">OCR未起動</span>
+  </header>
+
+  <main>
+    <section class="panel controls">
+      <div class="row wrap">
+        <label class="filebtn">＋ フォルダ追加<input id="folderInput" type="file" accept="image/*" webkitdirectory multiple></label>
+        <label class="filebtn">＋ 写真追加<input id="photoInput" type="file" accept="image/*" multiple></label>
+        <button id="analyzePending" class="primary">未解析を解析</button>
+        <button id="reanalyzeAll">全て再解析</button>
+        <button id="sortDate">撮影日順</button>
+        <button id="clearAll" class="danger ghost">全削除</button>
+      </div>
+      <div class="row wrap second">
+        <label class="filebtn secondary">Excelテンプレート選択<input id="templateInput" type="file" accept=".xlsm,.xlsx"></label>
+        <span id="templateName" class="muted">未選択</span>
+        <button id="makeExcel" class="success">Excel作成</button>
+        <button id="downloadCsv">解析結果CSV</button>
+      </div>
+      <div id="progressWrap" class="progressWrap hidden">
+        <div class="progress"><div id="progressBar"></div></div>
+        <div id="progressText" class="muted"></div>
+      </div>
+    </section>
+
+    <section class="panel settings">
+      <details>
+        <summary>解析設定・補正辞書</summary>
+        <div class="settingsGrid">
+          <label>既定の委託件名<input id="defaultContract" value="同志社大学2026年インフラ系情報システムリプレース作業"></label>
+          <label>低信頼度しきい値<input id="reviewThreshold" type="number" value="75" min="0" max="100"></label>
+          <label class="wide">備考コード → 撮影場所 補正辞書（1行1件：CODE=撮影場所）
+            <textarea id="mappingText" rows="7">KR-2FCommonLaboratory-2=交隣館 2F 共同研究室6
+KR-2FCommonLaboratory-1=交隣館 2F 共同研究室3
+TC2-1FHistoricalMuseum=知真館2号館 1F 歴史資料館
+BJ-318Hall=磐上館 3F 318前廊下</textarea>
+          </label>
+        </div>
+      </details>
+    </section>
+
+    <section class="panel statusbar">
+      <strong id="countText">0枚</strong>
+      <span id="reviewText">要確認 0枚</span>
+      <span id="runtimeText" class="muted"></span>
+    </section>
+
+    <section id="emptyState" class="panel empty">
+      <h2>写真を追加してください</h2>
+      <p>電子黒板を自動検出し、工種・測点・備考を行単位でOCRします。</p>
+    </section>
+
+    <section id="cards" class="cards"></section>
+  </main>
+
+  <template id="cardTpl">
+    <article class="card">
+      <div class="thumbWrap">
+        <img class="thumb" alt="写真">
+        <div class="scoreBadge"></div>
+        <button class="debugCrop" title="黒板切出し確認">黒板</button>
+      </div>
+      <div class="meta">
+        <div class="topline"><strong class="filename"></strong><span class="stateLabel"></span></div>
+        <div class="fields">
+          <label>工種<input class="work"></label>
+          <label>撮影場所<input class="place"></label>
+          <label>状態<input class="state"></label>
+          <label>備考<input class="remarks"></label>
+          <label class="wide">委託件名<input class="contract"></label>
+          <label>撮影日<input class="date" type="date"></label>
+        </div>
+        <details class="ocrDetails"><summary>OCRログ</summary><pre class="ocrRaw"></pre></details>
+        <div class="actions"><button class="up">↑</button><button class="down">↓</button><button class="reanalyze">再解析</button><button class="remove danger ghost">削除</button></div>
+      </div>
+    </article>
+  </template>
+
+  <dialog id="cropDialog"><button id="closeDialog">閉じる</button><h3>黒板検出</h3><canvas id="debugCanvas"></canvas><pre id="debugText"></pre></dialog>
+
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@6.0.1/dist/tesseract.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script src="parser.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
