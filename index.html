@@ -21,8 +21,8 @@
       <div class="row wrap">
         <label class="filebtn">＋ フォルダ追加<input id="folderInput" type="file" accept="image/*" webkitdirectory multiple></label>
         <label class="filebtn">＋ 写真追加<input id="photoInput" type="file" accept="image/*" multiple></label>
-        <button id="analyzePending" class="primary">未解析を解析</button>
-        <button id="reanalyzeAll">全て再解析</button>
+        <button id="analyzePending" class="primary">高精度で未解析を解析</button>
+        <button id="reanalyzeAll">高精度で全て再解析</button>
         <button id="sortDate">撮影日順</button>
         <button id="clearAll" class="danger ghost">全削除</button>
       </div>
@@ -62,7 +62,7 @@ BJ-318Hall=磐上館 3F 318前廊下</textarea>
 
     <section id="emptyState" class="panel empty">
       <h2>写真を追加してください</h2>
-      <p>黒板全体の罫線から、委託件名／工事名・工種・測点・備考・状態を位置ごとに読み取ります。</p>
+      <p>PP-OCRv5で黒板文字と位置を取得し、WebGPU対応PCではQwen3-VL 2Bで項目の意味を補正します。</p>
     </section>
 
     <section id="cards" class="cards"></section>
@@ -103,5 +103,6 @@ BJ-318Hall=磐上館 3F 318前廊下</textarea>
   <script src="features_v7.js?v=7"></script>
   <script src="features_v9.js?v=9"></script>
   <script src="features_v12.js?v=12"></script>
+  <script src="features_v14.js?v=14"></script>
 </body>
 </html>
