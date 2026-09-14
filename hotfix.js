@@ -1,12 +1,12 @@
 (() => {
 'use strict';
 
-// V10 OCR hotfix
+// V12 OCR geometry fix
 // - keep multi-file input stable
-// - normalize OCR rows WITHOUT hard-coding blackboard to x=0 / image bottom
-// - reuse detected geometry only when the same-resolution photos actually agree
-// - strengthen work-type recovery
-// - never crop the construction photo when creating the Excel image
+// - the base detector often starts at 測点 and misses the two rows above it
+// - recover the two horizontal separators above 測点 and remap OCR as:
+//   1=委託件名/工事名  2=工種  3=測点  4=備考領域
+// - keep full-photo export as CONTAIN (no crop)
 
 function stabilizeFileInput(id){
   const input=document.getElementById(id);
@@ -21,84 +21,128 @@ function stabilizeFileInput(id){
 stabilizeFileInput('folderInput');
 stabilizeFileInput('photoInput');
 
-const P=window.PhotoBookParser;
-if(P&&typeof P.parseBoard==='function'&&!P.__v10WorkWrapped){
-  const originalParse=P.parseBoard.bind(P);
-  P.parseBoard=(text,filename='')=>{
-    const r=originalParse(text,filename);
-    const t=String(text||'').normalize('NFKC').replace(/[\s　]+/g,'');
-    if(!r.work){
-      if(/撤去/.test(t)) r.work=/AP|無線/i.test(t)?'無線AP撤去':'機器撤去';
-      else if(/機.?器/.test(t)&&!/(撤去|取外|取り外)/.test(t)) r.work='機器設置';
-      else if(/設[置宣直買]/.test(t)){
-        if(/AP|無線/i.test(t)) r.work='無線AP設置';
-        else if(/SW|スイッチ/i.test(t)) r.work='スイッチ設置';
-        else r.work='機器設置';
-      } else if(/成端/.test(t)) r.work='成端';
-      else if(/試験/.test(t)) r.work='試験';
-      else if(/LAN/i.test(t)&&/配線/.test(t)) r.work='LAN配線';
-      else if(/光/.test(t)&&/(敷設|配線)/.test(t)) r.work='光ケーブル敷設';
-      else if(/配線/.test(t)) r.work='配線';
-      else if(/^(YM|KR|TC2|BJ)-/i.test(r.remarks||'')) r.work='機器設置';
-    }
-    return r;
-  };
-  P.__v10WorkWrapped=true;
-}
-
 const nativeDrawImage=CanvasRenderingContext2D.prototype.drawImage;
 const rowState=new WeakMap();
-const profileBySize=new Map();
-const VALUE_X0=0.24;
+const VALUE_X0=0.21;
 const VALUE_X1=0.995;
 
-function rowIndexFor(image,sy){
+function lum(d,i){return 0.2126*d[i]+0.7152*d[i+1]+0.0722*d[i+2];}
+
+function stateFor(image){
   let st=rowState.get(image);
-  if(!st){st={initial:[],calls:0};rowState.set(image,st);}
+  if(!st){
+    st={calls:0,orig:Array(4).fill(null),measure:null,upper:null};
+    rowState.set(image,st);
+  }
+  return st;
+}
+
+function findUpperSeparators(image,measure){
+  try{
+    const ctx=image.getContext('2d',{willReadFrequently:true});
+    const x0=Math.max(0,Math.floor(measure.x));
+    const sw=Math.max(40,Math.min(image.width-x0,Math.floor(measure.w)));
+    const lookUp=Math.max(measure.h*4.2,measure.w*.34);
+    const y0=Math.max(0,Math.floor(measure.y-lookUp));
+    const y1=Math.min(image.height,Math.floor(measure.y+4));
+    const sh=Math.max(8,y1-y0);
+    const im=ctx.getImageData(x0,y0,sw,sh),d=im.data;
+    const step=sw>700?2:1;
+    const samples=Math.ceil(sw/step);
+    const ys=[];
+    for(let yy=0;yy<sh;yy++){
+      let dark=0;
+      for(let xx=0;xx<sw;xx+=step){
+        const i=(yy*sw+xx)*4;
+        if(lum(d,i)<135) dark++;
+      }
+      if(dark>=samples*.42) ys.push(y0+yy);
+    }
+    const groups=[];
+    for(const y of ys){
+      if(!groups.length||y-groups[groups.length-1][groups[groups.length-1].length-1]>2) groups.push([y]);
+      else groups[groups.length-1].push(y);
+    }
+    const centers=groups
+      .map(g=>Math.round(g.reduce((a,b)=>a+b,0)/g.length))
+      .filter(y=>y<measure.y-3)
+      .sort((a,b)=>a-b);
+
+    if(centers.length>=2){
+      const sep1=centers[centers.length-1];
+      const top=centers[centers.length-2];
+      const minGap=Math.max(8,measure.h*.35);
+      if(sep1-top>=minGap&&measure.y-sep1>=minGap*.65){
+        return {top,sep1};
+      }
+    }
+  }catch(e){ console.warn('upper row scan failed',e); }
+
+  // Fallback only when line scan fails. Top rows on this board are shorter than 測点.
+  const rowH=Math.max(12,measure.h*.72);
+  return {top:Math.max(0,measure.y-rowH*2),sep1:Math.max(0,measure.y-rowH)};
+}
+
+function rawRowIndex(image,current){
+  const st=stateFor(image);
   if(st.calls<4){
     const idx=st.calls++;
-    st.initial[idx]=sy;
+    st.orig[idx]={...current};
+    if(idx===0){
+      st.measure={...current};
+      st.upper=findUpperSeparators(image,current);
+    }
     return idx;
   }
   let best=0,dist=Infinity;
-  st.initial.forEach((v,i)=>{const d=Math.abs((v??sy)-sy); if(d<dist){dist=d;best=i;}});
+  st.orig.forEach((g,i)=>{
+    if(!g) return;
+    const d=Math.abs(g.y-current.y);
+    if(d<dist){dist=d;best=i;}
+  });
   return best;
 }
 
-function stableGeometry(image,row,cur){
-  const key=`${image.width}x${image.height}`;
-  let p=profileBySize.get(key);
-  if(!p){p={rows:Array(4).fill(null)};profileBySize.set(key,p);}
-  const old=p.rows[row];
-  if(!old){p.rows[row]={...cur};return cur;}
+function semanticGeometry(image,row,current){
+  const st=stateFor(image);
+  const m=st.measure||st.orig[0]||current;
+  if(!st.upper) st.upper=findUpperSeparators(image,m);
+  const u=st.upper;
+  const place=st.orig[0]||m;
+  const remarks=st.orig[1]||current;
 
-  const close =
-    Math.abs(cur.x-old.x) <= Math.max(12,old.w*.08) &&
-    Math.abs(cur.w-old.w) <= Math.max(14,old.w*.10) &&
-    Math.abs(cur.y-old.y) <= Math.max(14,image.height*.045) &&
-    Math.abs(cur.h-old.h) <= Math.max(10,old.h*.28);
-
-  // Same overlay/resolution: smooth tiny detector jitter. If geometry really moved,
-  // trust the current detector instead of forcing the old profile.
-  if(close){
-    const merged={
-      x:old.x*.82+cur.x*.18,
-      y:old.y*.82+cur.y*.18,
-      w:old.w*.82+cur.w*.18,
-      h:old.h*.82+cur.h*.18
-    };
-    p.rows[row]=merged;
-    return merged;
+  if(row===0){
+    return {x:m.x,y:u.top,w:m.w,h:Math.max(8,u.sep1-u.top)};
   }
-  return cur;
+  if(row===1){
+    return {x:m.x,y:u.sep1,w:m.w,h:Math.max(8,m.y-u.sep1)};
+  }
+  if(row===2){
+    return {x:place.x,y:place.y,w:place.w,h:place.h};
+  }
+  // The base detector's second row is the large 備考/状態 area.
+  return {x:remarks.x,y:remarks.y,w:remarks.w,h:remarks.h};
+}
+
+function drawSemanticRow(ctx,image,row,g){
+  const padY=Math.max(1,g.h*.07);
+  const sx=g.x+g.w*VALUE_X0;
+  const sw=Math.max(20,g.w*(VALUE_X1-VALUE_X0));
+  const sy=g.y+padY;
+  const sh=Math.max(8,g.h-padY*2);
+  const c=ctx.canvas;
+  c.width=2200;
+  c.height=row===3?520:260;
+  ctx.imageSmoothingEnabled=true;
+  ctx.imageSmoothingQuality='high';
+  ctx.fillStyle='#fff';
+  ctx.fillRect(0,0,c.width,c.height);
+  return nativeDrawImage.call(ctx,image,sx,sy,sw,sh,0,0,c.width,c.height);
 }
 
 CanvasRenderingContext2D.prototype.drawImage=function(image,...args){
   const c=this.canvas;
 
-  // rowCanvas() from app.js. Keep app.js's actual detected x/y/w/h and only
-  // normalize scale + value-column crop. This avoids the old catastrophic
-  // assumption that every blackboard starts at x=0 and touches the bottom edge.
   const isRowOCR=
     c && image instanceof HTMLCanvasElement && args.length===8 &&
     args[4]===0 && args[5]===0 &&
@@ -107,23 +151,21 @@ CanvasRenderingContext2D.prototype.drawImage=function(image,...args){
     image.width>500 && image.height>400;
 
   if(isRowOCR){
-    const row=rowIndexFor(image,args[1]);
     const current={x:+args[0],y:+args[1],w:+args[2],h:+args[3]};
-    const g=stableGeometry(image,row,current);
+    const row=rawRowIndex(image,current);
+    const g=semanticGeometry(image,row,current);
+    return drawSemanticRow(this,image,row,g);
+  }
 
-    const padY=Math.max(1,g.h*.08);
-    const sx=g.x+g.w*VALUE_X0;
-    const sw=Math.max(20,g.w*(VALUE_X1-VALUE_X0));
-    const sy=g.y+padY;
-    const sh=Math.max(8,g.h-padY*2);
-
-    c.width=2200;
-    c.height=260;
-    this.imageSmoothingEnabled=true;
-    this.imageSmoothingQuality='high';
-    this.fillStyle='#fff';
-    this.fillRect(0,0,c.width,c.height);
-    return nativeDrawImage.call(this,image,sx,sy,sw,sh,0,0,c.width,c.height);
+  // Make the debug popup show the whole board, not only the detected lower half.
+  if(c && c.id==='debugCanvas' && image instanceof HTMLCanvasElement && args.length===8){
+    const measure={x:+args[0],y:+args[1],w:+args[2],h:Math.max(8,(+args[3])*.20)};
+    const u=findUpperSeparators(image,measure);
+    const fullY=Math.max(0,u.top);
+    const fullH=Math.max(20,(+args[1])+(+args[3])-fullY);
+    c.width=Math.max(1,Math.round(args[2]));
+    c.height=Math.max(1,Math.round(fullH));
+    return nativeDrawImage.call(this,image,args[0],fullY,args[2],fullH,0,0,c.width,c.height);
   }
 
   const isPhotoExport=
@@ -132,8 +174,8 @@ CanvasRenderingContext2D.prototype.drawImage=function(image,...args){
 
   if(isPhotoExport){
     const target=376/306;
-    const outW=1600, outH=Math.round(outW/target);
-    const sw=image.width, sh=image.height;
+    const outW=1600,outH=Math.round(outW/target);
+    const sw=image.width,sh=image.height;
     c.height=outH;
     this.imageSmoothingEnabled=true;
     this.imageSmoothingQuality='high';
