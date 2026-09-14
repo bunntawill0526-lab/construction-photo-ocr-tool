@@ -1,9 +1,10 @@
 (() => {
 'use strict';
 
-// V6
+// V8 OCR isolation update
 // 1) 状態（施工前/施工後/作業前/作業後ほか）の補完解析
 // 2) 各入力欄から「全写真へ反映」
+// 3) 状態専用OCRはメインOCR完了後にのみ順番に実行し、解析精度を落とす要因を排除
 
 const cardsRoot = document.getElementById('cards');
 if (!cardsRoot) return;
@@ -31,11 +32,9 @@ function detectState(text){
     .replace(/施I/g,'施工')
     .replace(/作業業/g,'作業');
 
-  // 明示語だけを採用。写真の内容から状態を推測しない。
   for (const s of STATE_WORDS) {
     if (t.includes(s)) return s;
   }
-  // OCRの軽微な空振れ用。施工/作業 + 前後が近接している場合だけ補正。
   let m = t.match(/施.{0,1}工.{0,1}(前|後)/);
   if (m) return `施工${m[1]}`;
   m = t.match(/作.{0,1}業.{0,1}(前|後)/);
@@ -43,9 +42,9 @@ function detectState(text){
   return '';
 }
 
-// parser.jsの旧状態語リストを、現行仕様で上書き補完する。
+// parser.jsの結果は壊さず、状態だけ追加補完する。
 const P = window.PhotoBookParser;
-if (P && typeof P.parseBoard === 'function' && !P.__v6StateWrapped) {
+if (P && typeof P.parseBoard === 'function' && !P.__v8StateWrapped) {
   const originalParse = P.parseBoard.bind(P);
   P.parseBoard = (text, filename='') => {
     const r = originalParse(text, filename);
@@ -53,15 +52,16 @@ if (P && typeof P.parseBoard === 'function' && !P.__v6StateWrapped) {
     if (state) r.state = state;
     return r;
   };
-  P.__v6StateWrapped = true;
+  P.__v8StateWrapped = true;
 }
 
 // ---------- 状態専用OCR ----------
-// V4の工種/測点/備考解析はそのまま。状態が空欄のときだけ、
-// 黒板を含む左下領域を追加OCRして明示語を拾う。
+// 重要: メインOCRとは絶対に並列実行しない。
 let stateWorkerPromise = null;
-const stateCache = new Map();      // image src -> state or ''
+const stateCache = new Map();
 const stateBusy = new Set();
+let queueTimer = 0;
+let queueRunning = false;
 
 async function getStateWorker(){
   if (stateWorkerPromise) return stateWorkerPromise;
@@ -90,8 +90,6 @@ function loadDomImage(src){
 function stateCropCanvas(img, binary=false){
   const sw = img.naturalWidth || img.width;
   const sh = img.naturalHeight || img.height;
-
-  // 電子黒板は左下にある。位置ズレも許容するため少し広めに取る。
   const sx = 0;
   const sy = Math.max(0, Math.floor(sh * 0.38));
   const cw = Math.min(sw, Math.floor(sw * 0.58));
@@ -133,18 +131,20 @@ function setStateStatus(card, text){
   s.textContent = text || '';
 }
 
+function coreOcrIsBusy(){
+  const texts = [...document.querySelectorAll('.card .scoreBadge')].map(x => x.textContent || '');
+  return texts.some(t => /未解析|解析中/.test(t));
+}
+
 async function analyzeStateForCard(card){
   const input = card.querySelector('.state');
   const imgEl = card.querySelector('.thumb');
-  const score = card.querySelector('.scoreBadge')?.textContent || '';
   const filename = card.querySelector('.filename')?.textContent || '';
   const raw = card.querySelector('.ocrRaw')?.textContent || '';
   if (!input || !imgEl || !imgEl.src) return;
-  if (/未解析|解析中/.test(score)) return;
-
-  // 手入力済みなら触らない。
   if (input.value.trim()) return;
 
+  // まずメインOCRの既存結果だけで判定。追加OCR不要なら即終了。
   const direct = detectState(`${filename}\n${raw}`);
   if (direct) {
     input.value = direct;
@@ -164,17 +164,22 @@ async function analyzeStateForCard(card){
     return;
   }
   if (stateBusy.has(imgEl.src)) return;
+  if (coreOcrIsBusy()) return;
+
   stateBusy.add(imgEl.src);
   setStateStatus(card, '状態解析中…');
 
   try {
     const img = await loadDomImage(imgEl.src);
+    if (coreOcrIsBusy()) return;
     const worker = await getStateWorker();
+    if (coreOcrIsBusy()) return;
+
     let result = await worker.recognize(stateCropCanvas(img, false));
     let text = result?.data?.text || '';
     let state = detectState(text);
 
-    if (!state) {
+    if (!state && !coreOcrIsBusy()) {
       result = await worker.recognize(stateCropCanvas(img, true));
       text += '\n' + (result?.data?.text || '');
       state = detectState(text);
@@ -197,6 +202,32 @@ async function analyzeStateForCard(card){
   }
 }
 
+function scheduleStateQueue(delay=800){
+  clearTimeout(queueTimer);
+  queueTimer = setTimeout(runStateQueue, delay);
+}
+
+async function runStateQueue(){
+  if (queueRunning) return;
+  if (coreOcrIsBusy()) {
+    scheduleStateQueue(900);
+    return;
+  }
+  queueRunning = true;
+  try {
+    const cards = [...document.querySelectorAll('.card')];
+    for (const card of cards) {
+      if (coreOcrIsBusy()) {
+        scheduleStateQueue(900);
+        break;
+      }
+      await analyzeStateForCard(card);
+    }
+  } finally {
+    queueRunning = false;
+  }
+}
+
 // ---------- 任意項目の全写真反映 ----------
 const BULK_FIELDS = [
   {cls:'work',     label:'工種'},
@@ -212,8 +243,6 @@ function applyFieldToAll(cls, value){
     input.value = value;
     dispatchChange(input);
   });
-
-  // 工事名/委託件名は上部の共通欄とも同期する。
   if (cls === 'contract') {
     const master = document.getElementById('defaultContract');
     if (master && master.value !== value) master.value = value;
@@ -254,12 +283,11 @@ function ensureStateDatalist(){
   if (document.getElementById('v6StateList')) return;
   const dl = document.createElement('datalist');
   dl.id = 'v6StateList';
-  ['施工前','施工後','作業前','作業後','施工中','作業中','設置前','設置後','撤去前','撤去後','完成','完了']
-    .forEach(v => {
-      const o = document.createElement('option');
-      o.value = v;
-      dl.appendChild(o);
-    });
+  STATE_WORDS.forEach(v => {
+    const o = document.createElement('option');
+    o.value = v;
+    dl.appendChild(o);
+  });
   document.body.appendChild(dl);
 }
 
@@ -270,11 +298,11 @@ function enhanceCardV6(card){
     state.setAttribute('list', 'v6StateList');
     state.placeholder = '施工前 / 施工後 / 作業前 / 作業後';
   }
-  analyzeStateForCard(card);
 }
 
 function enhanceAllV6(){
   document.querySelectorAll('.card').forEach(enhanceCardV6);
+  scheduleStateQueue();
 }
 
 ensureStateDatalist();
@@ -290,7 +318,14 @@ document.head.appendChild(style);
 
 enhanceAllV6();
 const mo = new MutationObserver(() => enhanceAllV6());
-mo.observe(cardsRoot, {childList:true, subtree:true});
+mo.observe(cardsRoot, {childList:true, subtree:true, characterData:true});
+
+['analyzePending','reanalyzeAll'].forEach(id => {
+  document.getElementById(id)?.addEventListener('click', () => scheduleStateQueue(1200));
+});
+cardsRoot.addEventListener('click', e => {
+  if (e.target.closest('.reanalyze')) scheduleStateQueue(1200);
+});
 
 window.addEventListener('beforeunload', async () => {
   try {
