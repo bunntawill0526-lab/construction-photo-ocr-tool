@@ -42,9 +42,9 @@
       <details>
         <summary>解析設定・補正辞書</summary>
         <div class="settingsGrid">
-          <label>既定の委託件名<input id="defaultContract" value="同志社大学2026年インフラ系情報システムリプレース作業"></label>
+          <label>既定の委託件名／工事名<input id="defaultContract" value="" placeholder="必要な場合だけ共通名を入力"></label>
           <label>低信頼度しきい値<input id="reviewThreshold" type="number" value="75" min="0" max="100"></label>
-          <label class="wide">備考コード → 撮影場所 補正辞書（1行1件：CODE=撮影場所）
+          <label class="wide">備考コード → 撮影場所 補正辞書（必要な場合のみ・1行1件：CODE=撮影場所）
             <textarea id="mappingText" rows="7">KR-2FCommonLaboratory-2=交隣館 2F 共同研究室6
 KR-2FCommonLaboratory-1=交隣館 2F 共同研究室3
 TC2-1FHistoricalMuseum=知真館2号館 1F 歴史資料館
@@ -62,7 +62,7 @@ BJ-318Hall=磐上館 3F 318前廊下</textarea>
 
     <section id="emptyState" class="panel empty">
       <h2>写真を追加してください</h2>
-      <p>同一レイアウトの電子黒板を正規化し、工種・測点・備考を行単位でOCRします。</p>
+      <p>電子黒板の4段を、委託件名／工事名・工種・測点・備考として行単位でOCRします。</p>
     </section>
 
     <section id="cards" class="cards"></section>
@@ -82,7 +82,7 @@ BJ-318Hall=磐上館 3F 318前廊下</textarea>
           <label>撮影場所<input class="place"></label>
           <label>状態<input class="state"></label>
           <label>備考<input class="remarks"></label>
-          <label class="wide">委託件名<input class="contract"></label>
+          <label class="wide">委託件名／工事名<input class="contract"></label>
           <label>撮影日<input class="date" type="date"></label>
         </div>
         <details class="ocrDetails"><summary>OCRログ</summary><pre class="ocrRaw"></pre></details>
@@ -95,7 +95,7 @@ BJ-318Hall=磐上館 3F 318前廊下</textarea>
 
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@6.0.1/dist/tesseract.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
-  <script src="parser.js?v=2"></script>
+  <script src="parser.js?v=11"></script>
   <script src="app.js?v=2"></script>
   <script src="hotfix.js?v=10"></script>
   <script src="features_v5.js?v=5"></script>
