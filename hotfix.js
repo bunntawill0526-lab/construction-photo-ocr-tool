@@ -1,11 +1,12 @@
 (() => {
 'use strict';
 
-// V4 hotfix
-// - stabilise multi-file input
-// - normalise this project's fixed electronic-blackboard rows before OCR
+// V10 OCR hotfix
+// - keep multi-file input stable
+// - normalize OCR rows WITHOUT hard-coding blackboard to x=0 / image bottom
+// - reuse detected geometry only when the same-resolution photos actually agree
 // - strengthen work-type recovery
-// - NEVER crop the construction photo when creating the Excel image
+// - never crop the construction photo when creating the Excel image
 
 function stabilizeFileInput(id){
   const input=document.getElementById(id);
@@ -20,9 +21,8 @@ function stabilizeFileInput(id){
 stabilizeFileInput('folderInput');
 stabilizeFileInput('photoInput');
 
-// Parser recovery. OCR is still the source; this only repairs likely reading errors.
 const P=window.PhotoBookParser;
-if(P&&typeof P.parseBoard==='function'){
+if(P&&typeof P.parseBoard==='function'&&!P.__v10WorkWrapped){
   const originalParse=P.parseBoard.bind(P);
   P.parseBoard=(text,filename='')=>{
     const r=originalParse(text,filename);
@@ -43,33 +43,16 @@ if(P&&typeof P.parseBoard==='function'){
     }
     return r;
   };
+  P.__v10WorkWrapped=true;
 }
 
 const nativeDrawImage=CanvasRenderingContext2D.prototype.drawImage;
-
-// The blackboard overlay used in these photos has the same pixel layout.
-// Instead of trusting per-photo line detection, use the first detected width for
-// each source resolution and crop the four upper rows at fixed proportions.
-const boardWidthBySize=new Map();
 const rowState=new WeakMap();
-const ROW_BOUNDS=[0,0.278,0.455,0.716,1.0];
-const FULL_BOARD_H_PER_W=0.75;
-const TOP4_H_PER_W=0.471;
-const VALUE_X0_PER_W=0.255;
-const VALUE_X1_PER_W=0.992;
+const profileBySize=new Map();
+const VALUE_X0=0.24;
+const VALUE_X1=0.995;
 
-function rememberBoardWidth(image,detected){
-  const key=`${image.width}x${image.height}`;
-  const sane=Math.max(image.width*.30,Math.min(image.width*.50,detected));
-  const old=boardWidthBySize.get(key);
-  if(!old){boardWidthBySize.set(key,sane);return sane;}
-  // Ignore one-off detection jumps. The overlay resolution is fixed.
-  const ratio=sane/old;
-  if(ratio>.93&&ratio<1.07){const merged=old*.8+sane*.2;boardWidthBySize.set(key,merged);return merged;}
-  return old;
-}
-
-function fixedRowIndex(image,sy){
+function rowIndexFor(image,sy){
   let st=rowState.get(image);
   if(!st){st={initial:[],calls:0};rowState.set(image,st);}
   if(st.calls<4){
@@ -78,14 +61,44 @@ function fixedRowIndex(image,sy){
     return idx;
   }
   let best=0,dist=Infinity;
-  st.initial.forEach((v,i)=>{const d=Math.abs((v??sy)-sy);if(d<dist){dist=d;best=i;}});
+  st.initial.forEach((v,i)=>{const d=Math.abs((v??sy)-sy); if(d<dist){dist=d;best=i;}});
   return best;
+}
+
+function stableGeometry(image,row,cur){
+  const key=`${image.width}x${image.height}`;
+  let p=profileBySize.get(key);
+  if(!p){p={rows:Array(4).fill(null)};profileBySize.set(key,p);}
+  const old=p.rows[row];
+  if(!old){p.rows[row]={...cur};return cur;}
+
+  const close =
+    Math.abs(cur.x-old.x) <= Math.max(12,old.w*.08) &&
+    Math.abs(cur.w-old.w) <= Math.max(14,old.w*.10) &&
+    Math.abs(cur.y-old.y) <= Math.max(14,image.height*.045) &&
+    Math.abs(cur.h-old.h) <= Math.max(10,old.h*.28);
+
+  // Same overlay/resolution: smooth tiny detector jitter. If geometry really moved,
+  // trust the current detector instead of forcing the old profile.
+  if(close){
+    const merged={
+      x:old.x*.82+cur.x*.18,
+      y:old.y*.82+cur.y*.18,
+      w:old.w*.82+cur.w*.18,
+      h:old.h*.82+cur.h*.18
+    };
+    p.rows[row]=merged;
+    return merged;
+  }
+  return cur;
 }
 
 CanvasRenderingContext2D.prototype.drawImage=function(image,...args){
   const c=this.canvas;
 
-  // rowCanvas() in app.js: source is the full-photo canvas, destination is 4x the detected row.
+  // rowCanvas() from app.js. Keep app.js's actual detected x/y/w/h and only
+  // normalize scale + value-column crop. This avoids the old catastrophic
+  // assumption that every blackboard starts at x=0 and touches the bottom edge.
   const isRowOCR=
     c && image instanceof HTMLCanvasElement && args.length===8 &&
     args[4]===0 && args[5]===0 &&
@@ -94,21 +107,16 @@ CanvasRenderingContext2D.prototype.drawImage=function(image,...args){
     image.width>500 && image.height>400;
 
   if(isRowOCR){
-    const detectedW=args[2];
-    const boardW=rememberBoardWidth(image,detectedW);
-    const row=fixedRowIndex(image,args[1]);
-    const boardTop=image.height-boardW*FULL_BOARD_H_PER_W;
-    const top4H=boardW*TOP4_H_PER_W;
-    const yA=boardTop+top4H*ROW_BOUNDS[row];
-    const yB=boardTop+top4H*ROW_BOUNDS[row+1];
-    const rowH=Math.max(10,yB-yA);
-    const padY=Math.max(2,rowH*.10);
-    const sx=boardW*VALUE_X0_PER_W;
-    const sw=boardW*(VALUE_X1_PER_W-VALUE_X0_PER_W);
-    const sy=yA+padY;
-    const sh=Math.max(8,rowH-padY*2);
+    const row=rowIndexFor(image,args[1]);
+    const current={x:+args[0],y:+args[1],w:+args[2],h:+args[3]};
+    const g=stableGeometry(image,row,current);
 
-    // Give Tesseract the same geometry every time, independent of line-detection jitter.
+    const padY=Math.max(1,g.h*.08);
+    const sx=g.x+g.w*VALUE_X0;
+    const sw=Math.max(20,g.w*(VALUE_X1-VALUE_X0));
+    const sy=g.y+padY;
+    const sh=Math.max(8,g.h-padY*2);
+
     c.width=2200;
     c.height=260;
     this.imageSmoothingEnabled=true;
@@ -118,8 +126,6 @@ CanvasRenderingContext2D.prototype.drawImage=function(image,...args){
     return nativeDrawImage.call(this,image,sx,sy,sw,sh,0,0,c.width,c.height);
   }
 
-  // croppedBlob() in app.js originally uses a 1600x~830 export canvas.
-  // Replace that operation with true CONTAIN. No source pixels are discarded.
   const isPhotoExport=
     c && image instanceof HTMLCanvasElement && args.length===8 &&
     c.width===1600 && c.height>=825 && c.height<=835;
