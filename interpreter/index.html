@@ -61,10 +61,10 @@ progress{width:100%;margin-top:8px}.hide{display:none}
 import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1';
 env.allowLocalModels=false; env.useBrowserCache=true;
 
-const M={'ja-en':'Xenova/opus-mt-ja-en','en-ja':'Xenova/opus-mt-en-jap'};
+const M={'ja-en':'Xenova/opus-mt-ja-en','en-ja':'Kadonox/fugumt-en-ja-onnx'};
 const L={'ja-en':{s:'ja-JP',t:'en-US',sn:'日本語'},'en-ja':{s:'en-US',t:'ja-JP',sn:'English'}};
 const $=x=>document.getElementById(x);
-let dir='ja-en', rec=null, listening=false, paused=false, last='', queue=Promise.resolve();
+let dir='ja-en', rec=null, listening=false, paused=false, last='', queue=Promise.resolve(), sessionText='';
 const pipes=new Map();
 
 function status(t,m=''){ $('status').textContent=t; $('dot').className='dot '+m; }
@@ -83,14 +83,14 @@ async function getPipe(d){
  const p=pipeline('translation',M[d],{device:'wasm',progress_callback:x=>{
    let v=0;if(typeof x?.progress==='number')v=x.progress;else if(x?.loaded&&x?.total)v=x.loaded/x.total*100;
    if(Number.isFinite(v))$('prog').value=Math.max(0,Math.min(100,v));
- }}).then(x=>{ $('prog').value=100; setTimeout(()=>$('prog').classList.add('hide'),700); status(listening?'聞き取り中':'準備完了',listening?'on':''); return x; })
+ }}).then(x=>{ $('prog').value=100; setTimeout(()=>$('prog').classList.add('hide'),700); status(listening?'読み上げ完了 → 次の発話待ち':'準備完了',listening?'on':''); return x; })
  .catch(e=>{status('翻訳モデル読込エラー','err');throw e});
  pipes.set(d,p);return p;
 }
 function speak(text,lang){
  if(!text||!('speechSynthesis'in window))return Promise.resolve();
  return new Promise(resolve=>{
-   paused=listening;if(paused&&rec){try{rec.stop()}catch{}}
+   paused=listening;if(paused&&rec){try{rec.abort()}catch{}}
    speechSynthesis.cancel();
    const u=new SpeechSynthesisUtterance(text);u.lang=lang;u.rate=1;
    const vs=speechSynthesis.getVoices();u.voice=vs.find(v=>v.lang?.toLowerCase()===lang.toLowerCase())||vs.find(v=>v.lang?.toLowerCase().startsWith(lang.slice(0,2).toLowerCase()))||null;
@@ -100,7 +100,7 @@ function speak(text,lang){
 }
 async function translate(text,d=dir){
  text=text.trim();if(!text)return;
- status('翻訳中…');
+ status('全文を翻訳中…');
  try{
   const p=await getPipe(d);const r=await p(text,{max_new_tokens:192});
   const out=r?.[0]?.translation_text?.trim()||'';
@@ -111,16 +111,41 @@ async function translate(text,d=dir){
 }
 function setup(){
  const C=window.SpeechRecognition||window.webkitSpeechRecognition;if(!C)return false;
- rec=new C();rec.continuous=true;rec.interimResults=true;rec.maxAlternatives=1;rec.lang=L[dir].s;
- rec.onstart=()=>{status('聞き取り中','on');$('mic').classList.add('on');$('mic').textContent='● 通訳停止'};
+ rec=new C();rec.continuous=false;rec.interimResults=true;rec.maxAlternatives=1;rec.lang=L[dir].s;
+ rec.onstart=()=>{sessionText='';status('聞き取り中（話し終わるまで翻訳しません）','on');$('mic').classList.add('on');$('mic').textContent='● 通訳停止'};
  rec.onresult=e=>{
-   let inter='';const finals=[];
-   for(let i=e.resultIndex;i<e.results.length;i++){const t=e.results[i][0].transcript.trim();if(!t)continue;e.results[i].isFinal?finals.push(t):inter+=t+' '}
-   $('interim').textContent=inter.trim();
-   finals.forEach(t=>{const d=dir;queue=queue.then(()=>translate(t,d))});
+   let inter='';
+   for(let i=e.resultIndex;i<e.results.length;i++){
+     const t=e.results[i][0].transcript.trim();
+     if(!t)continue;
+     if(e.results[i].isFinal){
+       sessionText+=(sessionText?' ':'')+t;
+     }else{
+       inter+=(inter?' ':'')+t;
+     }
+   }
+   const preview=(sessionText+(sessionText&&inter?' ':'')+inter).trim();
+   if(preview)$('source').textContent=preview;
+   $('interim').textContent=inter ? '…聞き取り中' : '';
  };
  rec.onerror=e=>{if(['aborted','no-speech'].includes(e.error))return;status('音声認識エラー：'+e.error,'err')};
- rec.onend=()=>{if(listening&&!paused)setTimeout(safeStart,300);else if(!listening){$('mic').classList.remove('on');$('mic').textContent='🎙 通訳開始'}};
+ rec.onend=()=>{
+   if(!listening){
+     $('mic').classList.remove('on');$('mic').textContent='🎙 通訳開始';return;
+   }
+   if(paused)return;
+   const text=sessionText.trim();
+   sessionText='';
+   $('interim').textContent='';
+   if(text){
+     const d=dir;
+     status('聞き取り完了 → 翻訳中…');
+     queue=queue.then(()=>translate(text,d));
+   }else{
+     status('聞き取り待ち','on');
+     setTimeout(safeStart,300);
+   }
+ };
  return true;
 }
 function safeStart(){if(!rec||!listening||paused)return;rec.lang=L[dir].s;try{rec.start()}catch{}}
