@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#08111f">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>同時通訳</title>
+<style>
+:root{color-scheme:dark;--bg:#07101d;--card:#101c2d;--line:#26364d;--text:#f6f8fb;--muted:#9cadc4;--a:#3b82f6;--b:#06b6d4;--ok:#34d399;--err:#fb7185}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at top,#11284a 0,#07101d 45%);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans JP",sans-serif}
+main{max-width:760px;margin:auto;padding:max(18px,env(safe-area-inset-top)) 14px max(28px,env(safe-area-inset-bottom))}
+header{display:flex;justify-content:space-between;align-items:end;margin-bottom:14px}h1{font-size:30px;margin:0}.sub{font-size:11px;color:#67e8f9;font-weight:800;letter-spacing:.12em}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.lang{border:1px solid var(--line);background:var(--card);color:var(--muted);border-radius:16px;padding:14px 8px;font-weight:800;font-size:15px}.lang.on{color:white;border-color:#60a5fa;background:linear-gradient(135deg,#1e40af88,#0e749088)}
+.card{background:#0e1929eF;border:1px solid var(--line);border-radius:20px;padding:15px;margin-top:10px;box-shadow:0 18px 50px #0005}.label{color:var(--muted);font-size:12px;margin-bottom:9px}.big{font-size:clamp(22px,5vw,34px);line-height:1.45;font-weight:760;min-height:70px;word-break:break-word}.translated{border-color:#155e75}.translated .big{color:#cffafe}
+.status{display:flex;align-items:center;gap:8px;font-size:13px}.dot{width:10px;height:10px;border-radius:50%;background:#64748b}.dot.on{background:var(--ok);box-shadow:0 0 0 5px #34d39922}.dot.err{background:var(--err)}
+.controls{display:grid;grid-template-columns:1fr auto;gap:8px;margin-top:12px}.mic{border:0;border-radius:20px;min-height:76px;color:white;background:linear-gradient(135deg,#2563eb,#0891b2);font-size:20px;font-weight:900}.mic.on{background:linear-gradient(135deg,#059669,#0f766e)}.small{border:1px solid var(--line);border-radius:16px;background:#172439;color:white;padding:0 18px;font-weight:800}
+textarea{width:100%;margin-top:8px;min-height:86px;border:1px solid var(--line);border-radius:14px;background:#08111f;color:white;padding:12px;font:inherit}.row{display:flex;gap:8px;margin-top:8px}.row button{flex:1;min-height:48px}.hint{font-size:11px;color:var(--muted);line-height:1.6;margin:12px 4px;text-align:center}
+progress{width:100%;margin-top:8px}.hide{display:none}
+@media(max-width:560px){.grid,.controls{grid-template-columns:1fr}.small{min-height:52px}}
+</style>
+</head>
+<body>
+<main>
+<header><div><div class="sub">FREE / PERSONAL</div><h1>同時通訳</h1></div></header>
+
+<div class="grid">
+<button id="je" class="lang on">🇯🇵 日本語 → 🇺🇸 English</button>
+<button id="ej" class="lang">🇺🇸 English → 🇯🇵 日本語</button>
+</div>
+
+<section class="card"><div class="status"><span id="dot" class="dot"></span><b id="status">準備完了</b></div><progress id="prog" class="hide" max="100" value="0"></progress></section>
+
+<section class="card">
+<div id="srcLabel" class="label">あなた：日本語</div>
+<div id="source" class="big">ここに話した言葉が表示されます</div>
+<div id="interim" style="color:#94a3b8;margin-top:8px"></div>
+</section>
+
+<section class="card translated">
+<div class="label">翻訳 <button id="replay" style="float:right;background:none;border:0;color:#67e8f9">🔊 再生</button></div>
+<div id="target" class="big">Translation will appear here.</div>
+</section>
+
+<div class="controls">
+<button id="mic" class="mic">🎙 通訳開始</button>
+<button id="swap" class="small">⇄ 入替</button>
+</div>
+
+<section class="card">
+<div class="label">手入力でも翻訳できます</div>
+<textarea id="manual" placeholder="話す代わりにここへ入力"></textarea>
+<div class="row"><button id="translate" class="small">翻訳して読み上げ</button></div>
+</section>
+
+<div class="hint">APIキー不要・利用料金0円。翻訳AIは初回利用時に端末へ読み込みます。<br>Safariで「共有」→「ホーム画面に追加」でアプリ風に使えます。</div>
+</main>
+
+<script type="module">
+import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1';
+env.allowLocalModels=false; env.useBrowserCache=true;
+
+const M={'ja-en':'Xenova/opus-mt-ja-en','en-ja':'Xenova/opus-mt-en-jap'};
+const L={'ja-en':{s:'ja-JP',t:'en-US',sn:'日本語'},'en-ja':{s:'en-US',t:'ja-JP',sn:'English'}};
+const $=x=>document.getElementById(x);
+let dir='ja-en', rec=null, listening=false, paused=false, last='', queue=Promise.resolve();
+const pipes=new Map();
+
+function status(t,m=''){ $('status').textContent=t; $('dot').className='dot '+m; }
+function ui(){
+ $('je').classList.toggle('on',dir==='ja-en'); $('ej').classList.toggle('on',dir==='en-ja');
+ $('srcLabel').textContent='あなた：'+L[dir].sn;
+ $('manual').placeholder=L[dir].sn+'を入力';
+ $('target').textContent=dir==='ja-en'?'Translation will appear here.':'ここに翻訳が表示されます';
+ if(rec)rec.lang=L[dir].s;
+}
+function setDir(d){ if(d===dir)return; stop(false); dir=d; ui(); $('source').textContent='ここに話した言葉が表示されます'; $('interim').textContent=''; last=''; }
+async function getPipe(d){
+ if(pipes.has(d))return pipes.get(d);
+ status('初回：翻訳AIを読み込み中…');
+ $('prog').classList.remove('hide');
+ const p=pipeline('translation',M[d],{device:'wasm',progress_callback:x=>{
+   let v=0;if(typeof x?.progress==='number')v=x.progress;else if(x?.loaded&&x?.total)v=x.loaded/x.total*100;
+   if(Number.isFinite(v))$('prog').value=Math.max(0,Math.min(100,v));
+ }}).then(x=>{ $('prog').value=100; setTimeout(()=>$('prog').classList.add('hide'),700); status(listening?'聞き取り中':'準備完了',listening?'on':''); return x; })
+ .catch(e=>{status('翻訳モデル読込エラー','err');throw e});
+ pipes.set(d,p);return p;
+}
+function speak(text,lang){
+ if(!text||!('speechSynthesis'in window))return Promise.resolve();
+ return new Promise(resolve=>{
+   paused=listening;if(paused&&rec){try{rec.stop()}catch{}}
+   speechSynthesis.cancel();
+   const u=new SpeechSynthesisUtterance(text);u.lang=lang;u.rate=1;
+   const vs=speechSynthesis.getVoices();u.voice=vs.find(v=>v.lang?.toLowerCase()===lang.toLowerCase())||vs.find(v=>v.lang?.toLowerCase().startsWith(lang.slice(0,2).toLowerCase()))||null;
+   const done=()=>{resolve();const restart=paused&&listening;paused=false;if(restart)setTimeout(safeStart,220)};
+   u.onend=done;u.onerror=done;speechSynthesis.speak(u);
+ });
+}
+async function translate(text,d=dir){
+ text=text.trim();if(!text)return;
+ status('翻訳中…');
+ try{
+  const p=await getPipe(d);const r=await p(text,{max_new_tokens:192});
+  const out=r?.[0]?.translation_text?.trim()||'';
+  if(!out)throw new Error('翻訳結果なし');
+  $('source').textContent=text;$('interim').textContent='';$('target').textContent=out;last=out;
+  await speak(out,L[d].t);status(listening?'聞き取り中':'準備完了',listening?'on':'');
+ }catch(e){console.error(e);$('target').textContent='翻訳エラー';status('翻訳エラー','err')}
+}
+function setup(){
+ const C=window.SpeechRecognition||window.webkitSpeechRecognition;if(!C)return false;
+ rec=new C();rec.continuous=true;rec.interimResults=true;rec.maxAlternatives=1;rec.lang=L[dir].s;
+ rec.onstart=()=>{status('聞き取り中','on');$('mic').classList.add('on');$('mic').textContent='● 通訳停止'};
+ rec.onresult=e=>{
+   let inter='';const finals=[];
+   for(let i=e.resultIndex;i<e.results.length;i++){const t=e.results[i][0].transcript.trim();if(!t)continue;e.results[i].isFinal?finals.push(t):inter+=t+' '}
+   $('interim').textContent=inter.trim();
+   finals.forEach(t=>{const d=dir;queue=queue.then(()=>translate(t,d))});
+ };
+ rec.onerror=e=>{if(['aborted','no-speech'].includes(e.error))return;status('音声認識エラー：'+e.error,'err')};
+ rec.onend=()=>{if(listening&&!paused)setTimeout(safeStart,300);else if(!listening){$('mic').classList.remove('on');$('mic').textContent='🎙 通訳開始'}};
+ return true;
+}
+function safeStart(){if(!rec||!listening||paused)return;rec.lang=L[dir].s;try{rec.start()}catch{}}
+function start(){
+ if(!rec&&!setup()){status('Safariの音声認識が利用できません','err');return}
+ listening=true;
+ if('speechSynthesis'in window){const u=new SpeechSynthesisUtterance('');u.volume=0;speechSynthesis.speak(u)}
+ safeStart();
+}
+function stop(show=true){listening=false;paused=false;if(rec){try{rec.stop()}catch{}}$('mic').classList.remove('on');$('mic').textContent='🎙 通訳開始';if(show)status('停止中')}
+$('je').onclick=()=>setDir('ja-en');$('ej').onclick=()=>setDir('en-ja');$('swap').onclick=()=>setDir(dir==='ja-en'?'en-ja':'ja-en');
+$('mic').onclick=()=>listening?stop():start();
+$('replay').onclick=()=>last&&speak(last,L[dir].t);
+$('translate').onclick=()=>{const t=$('manual').value.trim();if(t){const d=dir;queue=queue.then(()=>translate(t,d))}};
+ui();setup();
+if(!(window.SpeechRecognition||window.webkitSpeechRecognition))status('音声認識未対応：手入力は使えます','err');
+</script>
+</body></html>
