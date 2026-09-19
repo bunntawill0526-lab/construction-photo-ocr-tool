@@ -98,12 +98,61 @@ function speak(text,lang){
    u.onend=done;u.onerror=done;speechSynthesis.speak(u);
  });
 }
+
+function phraseOverride(text,d){
+  const s=text.trim().replace(/[.!?。！？]+$/,'').toLowerCase();
+  if(d==='en-ja'){
+    const map={
+      'hello':'こんにちは',
+      'hi':'こんにちは',
+      'hey':'こんにちは',
+      'good morning':'おはようございます',
+      'good afternoon':'こんにちは',
+      'good evening':'こんばんは',
+      'good night':'おやすみなさい',
+      'thank you':'ありがとうございます',
+      'thanks':'ありがとう',
+      'thank you very much':'本当にありがとうございます',
+      'you’re welcome':'どういたしまして',
+      "you're welcome":'どういたしまして',
+      'excuse me':'すみません',
+      'sorry':'すみません',
+      'yes':'はい',
+      'no':'いいえ',
+      'okay':'わかりました',
+      'ok':'わかりました'
+    };
+    return map[s]||'';
+  }
+  if(d==='ja-en'){
+    const map={
+      'こんにちは':'Hello.',
+      'ハロー':'Hello.',
+      'おはよう':'Good morning.',
+      'おはようございます':'Good morning.',
+      'こんばんは':'Good evening.',
+      'ありがとう':'Thank you.',
+      'ありがとうございます':'Thank you.',
+      'すみません':'Excuse me.',
+      'はい':'Yes.',
+      'いいえ':'No.'
+    };
+    return map[text.trim().replace(/[。！？!?]+$/,'')]||'';
+  }
+  return '';
+}
+
 async function translate(text,d=dir){
  text=text.trim();if(!text)return;
  status('全文を翻訳中…');
  try{
-  const p=await getPipe(d);const r=await p(text,{max_new_tokens:192});
-  const out=r?.[0]?.translation_text?.trim()||'';
+  const fixed=phraseOverride(text,d);
+  let out=fixed;
+  if(!out){
+    const p=await getPipe(d);
+    const r=await p(text,{max_new_tokens:192});
+    out=r?.[0]?.translation_text?.trim()||'';
+  }
   if(!out)throw new Error('翻訳結果なし');
   $('source').textContent=text;$('interim').textContent='';$('target').textContent=out;last=out;
   await speak(out,L[d].t);status(listening?'聞き取り中':'準備完了',listening?'on':'');
