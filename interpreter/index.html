@@ -61,7 +61,7 @@ progress{width:100%;margin-top:8px}.hide{display:none}
 import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1';
 env.allowLocalModels=false; env.useBrowserCache=true;
 
-const M={'ja-en':'Xenova/opus-mt-ja-en','en-ja':'Kadonox/fugumt-en-ja-onnx'};
+const M={'ja-en':'Kadonox/fugumt-ja-en-onnx','en-ja':'Kadonox/fugumt-en-ja-onnx'};
 const L={'ja-en':{s:'ja-JP',t:'en-US',sn:'日本語'},'en-ja':{s:'en-US',t:'ja-JP',sn:'English'}};
 const $=x=>document.getElementById(x);
 let dir='ja-en', rec=null, listening=false, paused=false, last='', queue=Promise.resolve(), sessionText='';
@@ -99,6 +99,31 @@ function speak(text,lang){
  });
 }
 
+
+function splitForTranslation(text,d){
+  const s=text.trim();
+  if(!s)return [];
+  const re=d==='ja-en' ? /[^。！？!?]+[。！？!?]?/g : /[^.!?]+[.!?]?/g;
+  const parts=s.match(re)?.map(x=>x.trim()).filter(Boolean)||[s];
+  return parts.length>1 ? parts : [s];
+}
+function naturalizeEnglish(text){
+  return text
+    .replace(/\bI am\b/g,"I'm")
+    .replace(/\bI have\b/g,"I've")
+    .replace(/\bI will\b/g,"I'll")
+    .replace(/\bI would\b/g,"I'd")
+    .replace(/\bdo not\b/gi,"don't")
+    .replace(/\bdoes not\b/gi,"doesn't")
+    .replace(/\bdid not\b/gi,"didn't")
+    .replace(/\bcannot\b/gi,"can't")
+    .replace(/\bwill not\b/gi,"won't")
+    .replace(/\bit is\b/gi,"it's")
+    .replace(/\bthat is\b/gi,"that's")
+    .replace(/\bthere is\b/gi,"there's")
+    .replace(/\bwe are\b/gi,"we're")
+    .replace(/\byou are\b/gi,"you're");
+}
 function phraseOverride(text,d){
   const s=text.trim().replace(/[.!?。！？]+$/,'').toLowerCase();
   if(d==='en-ja'){
@@ -150,8 +175,15 @@ async function translate(text,d=dir){
   let out=fixed;
   if(!out){
     const p=await getPipe(d);
-    const r=await p(text,{max_new_tokens:192});
-    out=r?.[0]?.translation_text?.trim()||'';
+    const parts=splitForTranslation(text,d);
+    const translated=[];
+    for(const part of parts){
+      const r=await p(part,{max_new_tokens:256,num_beams:4,early_stopping:true});
+      const t=r?.[0]?.translation_text?.trim()||'';
+      if(t)translated.push(t);
+    }
+    out=translated.join(' ').trim();
+    if(d==='ja-en')out=naturalizeEnglish(out);
   }
   if(!out)throw new Error('翻訳結果なし');
   $('source').textContent=text;$('interim').textContent='';$('target').textContent=out;last=out;
