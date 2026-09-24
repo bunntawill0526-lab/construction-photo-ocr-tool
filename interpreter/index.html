@@ -107,17 +107,16 @@ function splitForTranslation(text,d){
   const endMarks=d==='ja-en' ? new Set(['。','！','？','!','?']) : new Set(['.','!','?']);
   const pairs=new Map([
     ['「','」'],['『','』'],['（','）'],['【','】'],['〈','〉'],['《','》'],
-    ['“','”'],['‘','’'],['(',' )'],['[',']']
+    ['“','”'],['‘','’'],['(',')'],['[',']']
   ]);
-  // Correct the ASCII parenthesis pair without making the table harder to read.
-  pairs.set('(',')');
 
   const closing=new Set([...pairs.values()]);
   const stack=[];
   const parts=[];
   let buf='';
 
-  for(const ch of s){
+  for(let i=0;i<s.length;i++){
+    const ch=s[i];
     buf+=ch;
     if(pairs.has(ch)){
       stack.push(pairs.get(ch));
@@ -128,6 +127,11 @@ function splitForTranslation(text,d){
       continue;
     }
     if(endMarks.has(ch) && stack.length===0){
+      const prev=s[i-1]||'', next=s[i+1]||'';
+      // Do not split decimal numbers, version strings, or IP addresses in English input.
+      if(ch==='.' && /\d/.test(prev) && /\d/.test(next))continue;
+      // Keep repeated punctuation such as !? / ！？ in the same sentence.
+      if(next && endMarks.has(next))continue;
       const part=buf.trim();
       if(part)parts.push(part);
       buf='';
@@ -254,7 +258,13 @@ async function translate(text,d=dir,version=translationVersion){
   $('source').textContent=text;$('interim').textContent='';$('target').textContent=out;last=out;
   await speak(out,L[d].t);
   if(version===translationVersion&&d===dir)status(listening?'聞き取り中':'準備完了',listening?'on':'');
- }catch(e){console.error(e);$('target').textContent='翻訳エラー';status('翻訳エラー','err')}
+ }catch(e){
+  console.error(e);
+  if(version===translationVersion&&d===dir){
+    $('target').textContent='翻訳エラー';
+    status('翻訳エラー','err');
+  }
+ }
 }
 function setup(){
  const C=window.SpeechRecognition||window.webkitSpeechRecognition;if(!C)return false;
