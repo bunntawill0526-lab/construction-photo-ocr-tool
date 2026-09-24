@@ -64,7 +64,7 @@ env.allowLocalModels=false; env.useBrowserCache=true;
 const M={'ja-en':'Kadonox/fugumt-ja-en-onnx','en-ja':'Kadonox/fugumt-en-ja-onnx'};
 const L={'ja-en':{s:'ja-JP',t:'en-US',sn:'日本語'},'en-ja':{s:'en-US',t:'ja-JP',sn:'English'}};
 const $=x=>document.getElementById(x);
-let dir='ja-en', rec=null, listening=false, paused=false, last='', queue=Promise.resolve(), sessionText='';
+let dir='ja-en', rec=null, listening=false, paused=false, last='', queue=Promise.resolve(), sessionText='', translationVersion=0;
 const pipes=new Map();
 
 function status(t,m=''){ $('status').textContent=t; $('dot').className='dot '+m; }
@@ -75,7 +75,7 @@ function ui(){
  $('target').textContent=dir==='ja-en'?'Translation will appear here.':'ここに翻訳が表示されます';
  if(rec)rec.lang=L[dir].s;
 }
-function setDir(d){ if(d===dir)return; stop(false); dir=d; ui(); $('source').textContent='ここに話した言葉が表示されます'; $('interim').textContent=''; last=''; }
+function setDir(d){ if(d===dir)return; translationVersion++; stop(false); dir=d; ui(); $('source').textContent='ここに話した言葉が表示されます'; $('interim').textContent=''; last=''; }
 async function getPipe(d){
  if(pipes.has(d))return pipes.get(d);
  status('初回：翻訳AIを読み込み中…');
@@ -84,7 +84,7 @@ async function getPipe(d){
    let v=0;if(typeof x?.progress==='number')v=x.progress;else if(x?.loaded&&x?.total)v=x.loaded/x.total*100;
    if(Number.isFinite(v))$('prog').value=Math.max(0,Math.min(100,v));
  }}).then(x=>{ $('prog').value=100; setTimeout(()=>$('prog').classList.add('hide'),700); status(listening?'読み上げ完了 → 次の発話待ち':'準備完了',listening?'on':''); return x; })
- .catch(e=>{status('翻訳モデル読込エラー','err');throw e});
+ .catch(e=>{pipes.delete(d);status('翻訳モデル読込エラー','err');throw e});
  pipes.set(d,p);return p;
 }
 function speak(text,lang){
@@ -103,26 +103,89 @@ function speak(text,lang){
 function splitForTranslation(text,d){
   const s=text.trim();
   if(!s)return [];
-  const re=d==='ja-en' ? /[^。！？!?]+[。！？!?]?/g : /[^.!?]+[.!?]?/g;
-  const parts=s.match(re)?.map(x=>x.trim()).filter(Boolean)||[s];
-  return parts.length>1 ? parts : [s];
+
+  const endMarks=d==='ja-en' ? new Set(['。','！','？','!','?']) : new Set(['.','!','?']);
+  const pairs=new Map([
+    ['「','」'],['『','』'],['（','）'],['【','】'],['〈','〉'],['《','》'],
+    ['“','”'],['‘','’'],['(',' )'],['[',']']
+  ]);
+  // Correct the ASCII parenthesis pair without making the table harder to read.
+  pairs.set('(',')');
+
+  const closing=new Set([...pairs.values()]);
+  const stack=[];
+  const parts=[];
+  let buf='';
+
+  for(const ch of s){
+    buf+=ch;
+    if(pairs.has(ch)){
+      stack.push(pairs.get(ch));
+      continue;
+    }
+    if(closing.has(ch)){
+      if(stack.length && stack[stack.length-1]===ch)stack.pop();
+      continue;
+    }
+    if(endMarks.has(ch) && stack.length===0){
+      const part=buf.trim();
+      if(part)parts.push(part);
+      buf='';
+    }
+  }
+
+  const rest=buf.trim();
+  if(rest)parts.push(rest);
+  return parts.length ? parts : [s];
 }
-function naturalizeEnglish(text){
+
+function preserveCase(source, lower, upper){
+  if(source===source.toUpperCase() && /[A-Z]/.test(source))return source;
+  return /^[A-Z]/.test(source) ? upper : lower;
+}
+function contractEnglishOutsideQuotes(text){
   return text
     .replace(/\bI am\b/g,"I'm")
-    .replace(/\bI have\b/g,"I've")
     .replace(/\bI will\b/g,"I'll")
     .replace(/\bI would\b/g,"I'd")
-    .replace(/\bdo not\b/gi,"don't")
-    .replace(/\bdoes not\b/gi,"doesn't")
-    .replace(/\bdid not\b/gi,"didn't")
-    .replace(/\bcannot\b/gi,"can't")
-    .replace(/\bwill not\b/gi,"won't")
-    .replace(/\bit is\b/gi,"it's")
-    .replace(/\bthat is\b/gi,"that's")
-    .replace(/\bthere is\b/gi,"there's")
-    .replace(/\bwe are\b/gi,"we're")
-    .replace(/\byou are\b/gi,"you're");
+    .replace(/\bdo not\b/gi,m=>preserveCase(m,"don't","Don't"))
+    .replace(/\bdoes not\b/gi,m=>preserveCase(m,"doesn't","Doesn't"))
+    .replace(/\bdid not\b/gi,m=>preserveCase(m,"didn't","Didn't"))
+    .replace(/\bcannot\b/gi,m=>preserveCase(m,"can't","Can't"))
+    .replace(/\bwill not\b/gi,m=>preserveCase(m,"won't","Won't"))
+    .replace(/\bit is\b/gi,m=>preserveCase(m,"it's","It's"))
+    .replace(/\bthat is\b/gi,m=>preserveCase(m,"that's","That's"))
+    .replace(/\bthere is\b/gi,m=>preserveCase(m,"there's","There's"))
+    .replace(/\bwe are\b/gi,m=>preserveCase(m,"we're","We're"))
+    .replace(/\byou are\b/gi,m=>preserveCase(m,"you're","You're"));
+}
+function naturalizeEnglish(text){
+  let out='', chunk='', quoteEnd='';
+  const quotePairs=new Map([['"','"'],['“','”'],['「','」'],['『','』']]);
+
+  const flush=()=>{
+    if(!chunk)return;
+    out+=quoteEnd ? chunk : contractEnglishOutsideQuotes(chunk);
+    chunk='';
+  };
+
+  for(const ch of text){
+    if(!quoteEnd && quotePairs.has(ch)){
+      flush();
+      quoteEnd=quotePairs.get(ch);
+      out+=ch;
+      continue;
+    }
+    if(quoteEnd && ch===quoteEnd){
+      out+=chunk+ch;
+      chunk='';
+      quoteEnd='';
+      continue;
+    }
+    chunk+=ch;
+  }
+  flush();
+  return out;
 }
 function phraseOverride(text,d){
   const s=text.trim().replace(/[.!?。！？]+$/,'').toLowerCase();
@@ -167,8 +230,9 @@ function phraseOverride(text,d){
   return '';
 }
 
-async function translate(text,d=dir){
+async function translate(text,d=dir,version=translationVersion){
  text=text.trim();if(!text)return;
+ if(version!==translationVersion||d!==dir)return;
  status('全文を翻訳中…');
  try{
   const fixed=phraseOverride(text,d);
@@ -186,8 +250,10 @@ async function translate(text,d=dir){
     if(d==='ja-en')out=naturalizeEnglish(out);
   }
   if(!out)throw new Error('翻訳結果なし');
+  if(version!==translationVersion||d!==dir)return;
   $('source').textContent=text;$('interim').textContent='';$('target').textContent=out;last=out;
-  await speak(out,L[d].t);status(listening?'聞き取り中':'準備完了',listening?'on':'');
+  await speak(out,L[d].t);
+  if(version===translationVersion&&d===dir)status(listening?'聞き取り中':'準備完了',listening?'on':'');
  }catch(e){console.error(e);$('target').textContent='翻訳エラー';status('翻訳エラー','err')}
 }
 function setup(){
@@ -219,9 +285,9 @@ function setup(){
    sessionText='';
    $('interim').textContent='';
    if(text){
-     const d=dir;
+     const d=dir, version=translationVersion;
      status('聞き取り完了 → 翻訳中…');
-     queue=queue.then(()=>translate(text,d));
+     queue=queue.then(()=>translate(text,d,version));
    }else{
      status('聞き取り待ち','on');
      setTimeout(safeStart,300);
@@ -240,7 +306,7 @@ function stop(show=true){listening=false;paused=false;if(rec){try{rec.stop()}cat
 $('je').onclick=()=>setDir('ja-en');$('ej').onclick=()=>setDir('en-ja');$('swap').onclick=()=>setDir(dir==='ja-en'?'en-ja':'ja-en');
 $('mic').onclick=()=>listening?stop():start();
 $('replay').onclick=()=>last&&speak(last,L[dir].t);
-$('translate').onclick=()=>{const t=$('manual').value.trim();if(t){const d=dir;queue=queue.then(()=>translate(t,d))}};
+$('translate').onclick=()=>{const t=$('manual').value.trim();if(t){const d=dir,version=translationVersion;queue=queue.then(()=>translate(t,d,version))}};
 ui();setup();
 if(!(window.SpeechRecognition||window.webkitSpeechRecognition))status('音声認識未対応：手入力は使えます','err');
 </script>
